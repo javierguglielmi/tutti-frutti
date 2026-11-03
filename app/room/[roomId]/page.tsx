@@ -33,7 +33,7 @@ export default function RoomPage({ params }: PageProps) {
   const roomId = params.roomId;
   const router = useRouter();
 
-  const [currentTheme, setCurrentTheme] = useState<ThemeId>('light');
+  const [currentTheme, setCurrentTheme] = useState<ThemeId>('dark');
   const [currentUser, setCurrentUser] = useState<Player | null>(null);
   const [channel, setChannel] = useState<any>(null);
 
@@ -67,7 +67,19 @@ export default function RoomPage({ params }: PageProps) {
   const [newCatInput, setNewCatInput] = useState('');
   const [copiedLink, setCopiedLink] = useState(false);
 
-  const t = THEMES[currentTheme];
+  useEffect(() => {
+    const savedTheme = localStorage.getItem('tf_theme') as ThemeId;
+    if (savedTheme && THEMES[savedTheme]) {
+      setCurrentTheme(savedTheme);
+    }
+  }, []);
+
+  const changeTheme = (newTheme: ThemeId) => {
+    setCurrentTheme(newTheme);
+    localStorage.setItem('tf_theme', newTheme);
+  };
+
+  const t = THEMES[currentTheme] || THEMES.dark;
 
   useEffect(() => {
     const saved = localStorage.getItem('tf_player');
@@ -388,7 +400,7 @@ export default function RoomPage({ params }: PageProps) {
           </div>
           <div>
             <div className="text-sm font-bold flex items-center gap-2">
-              Sala: <span className="font-mono bg-slate-200/50 dark:bg-slate-800 px-2 py-0.5 rounded text-xs">{roomId}</span>
+              Sala: <span className="font-mono bg-black/10 dark:bg-white/10 px-2 py-0.5 rounded text-xs">{roomId}</span>
               {roomState.pin && (
                 <span className="flex items-center gap-1 text-[11px] font-bold text-amber-500 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-full">
                   <Lock className="w-3 h-3" /> Privada
@@ -404,7 +416,7 @@ export default function RoomPage({ params }: PageProps) {
             {(['light', 'paper', 'dark', 'arcade'] as ThemeId[]).map((themeKey) => (
               <button
                 key={themeKey}
-                onClick={() => setCurrentTheme(themeKey)}
+                onClick={() => changeTheme(themeKey)}
                 title={THEMES[themeKey].name}
                 className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-all ${
                   currentTheme === themeKey

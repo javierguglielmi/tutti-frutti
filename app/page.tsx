@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Sparkles, Users, ArrowRight, Play, Lock } from 'lucide-react';
+import { Sparkles, ArrowRight, Play, Lock } from 'lucide-react';
 
 export default function HomePage() {
   const router = useRouter();
