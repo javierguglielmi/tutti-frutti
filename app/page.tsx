@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Sparkles, Users, ArrowRight, Play, Lock, KeyRound } from 'lucide-react';
+import { Sparkles, Users, ArrowRight, Play, Lock } from 'lucide-react';
 
 export default function HomePage() {
   const router = useRouter();
@@ -10,7 +10,6 @@ export default function HomePage() {
   const [roomCode, setRoomCode] = useState('');
   const [avatar, setAvatar] = useState('🦊');
 
-  // Privacidad / PIN
   const [enablePin, setEnablePin] = useState(false);
   const [createPin, setCreatePin] = useState('');
   const [joinPin, setJoinPin] = useState('');
@@ -22,7 +21,6 @@ export default function HomePage() {
     if (!userName.trim()) return;
     const newRoomId = Math.random().toString(36).substring(2, 7).toUpperCase();
     
-    // Guardar credenciales de jugador
     localStorage.setItem(
       'tf_player',
       JSON.stringify({
@@ -32,7 +30,7 @@ export default function HomePage() {
         createdPin: enablePin && createPin.trim().length > 0 ? createPin.trim() : null,
       })
     );
-    router.push(`/room/${newRoomId}`);
+    router.push('/room/' + newRoomId);
   };
 
   const handleJoinRoom = (e: React.FormEvent) => {
@@ -47,7 +45,7 @@ export default function HomePage() {
         enteredPin: joinPin.trim(),
       })
     );
-    router.push(`/room/${roomCode.toUpperCase().trim()}`);
+    router.push('/room/' + roomCode.toUpperCase().trim());
   };
 
   return (
@@ -102,7 +100,6 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* SECCIÓN CREAR SALA */}
         <div className="pt-2 space-y-3">
           <div className="bg-slate-950/60 border border-slate-800/80 rounded-2xl p-3.5 space-y-3">
             <div className="flex items-center justify-between">
@@ -144,7 +141,6 @@ export default function HomePage() {
             <span className="bg-slate-900 px-3 text-xs text-slate-500 uppercase">o unirse a una</span>
           </div>
 
-          {/* SECCIÓN UNIRSE A SALA */}
           <div className="space-y-2">
             <div className="flex gap-2">
               <input

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef, use } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { RoomState, Player, ThemeId } from '@/lib/types';
@@ -10,40 +10,38 @@ import {
   Trophy,
   Users,
   Clock,
-  Sparkles,
   Play,
-  RotateCcw,
   Check,
   X,
-  Volume2,
   Settings2,
   Plus,
   Share2,
   Lock,
   UserX,
-  ShieldCheck,
-  KeyRound,
   AlertTriangle
 } from 'lucide-react';
 
 const LETTERS = 'ABCDEFGHIJLMNOPQRSTUV';
 
-export default function RoomPage({ params }: { params: Promise<{ roomId: string }> }) {
-  const resolvedParams = use(params);
-  const roomId = resolvedParams.roomId;
+interface PageProps {
+  params: {
+    roomId: string;
+  };
+}
+
+export default function RoomPage({ params }: PageProps) {
+  const roomId = params.roomId;
   const router = useRouter();
 
   const [currentTheme, setCurrentTheme] = useState<ThemeId>('light');
   const [currentUser, setCurrentUser] = useState<Player | null>(null);
   const [channel, setChannel] = useState<any>(null);
 
-  // Estados de control de acceso y expulsión
   const [isBanned, setIsBanned] = useState(false);
   const [enteredPin, setEnteredPin] = useState('');
   const [isPinValidated, setIsPinValidated] = useState(false);
   const [pinError, setPinError] = useState(false);
 
-  // Estado del juego
   const [roomState, setRoomState] = useState<RoomState>({
     roomId,
     pin: undefined,
@@ -71,7 +69,6 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
 
   const t = THEMES[currentTheme];
 
-  // 1. Cargar usuario de localStorage
   useEffect(() => {
     const saved = localStorage.getItem('tf_player');
     if (!saved) {
@@ -100,11 +97,10 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     }
   }, [router]);
 
-  // 2. Conectar a Supabase Realtime Channel
   useEffect(() => {
     if (!currentUser) return;
 
-    const ch = supabase.channel(`room:${roomId}`, {
+    const ch = supabase.channel('room:' + roomId, {
       config: {
         presence: { key: currentUser.id },
         broadcast: { self: true },
@@ -115,13 +111,11 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
       const incomingState: RoomState = payload.state;
       setRoomState(incomingState);
 
-      // Si este usuario fue expulsado
-      if (incomingState.bannedPlayerIds?.includes(currentUser.id)) {
+      if (incomingState.bannedPlayerIds && incomingState.bannedPlayerIds.indexOf(currentUser.id) !== -1) {
         setIsBanned(true);
         ch.unsubscribe();
       }
 
-      // Si la sala tiene PIN y somos invitados
       if (!currentUser.isHost && incomingState.pin) {
         setRoomState((prev) => ({ ...prev, pin: incomingState.pin }));
       }
@@ -144,7 +138,7 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
       const active: Player[] = Object.values(presenceState)
         .flat()
         .map((p: any) => p.user)
-        .filter((p: Player) => !roomState.bannedPlayerIds?.includes(p.id));
+        .filter((p: Player) => !(roomState.bannedPlayerIds && roomState.bannedPlayerIds.indexOf(p.id) !== -1));
 
       setRoomState((prev) => {
         const hostExists = active.some((p) => p.id === prev.hostId);
@@ -175,12 +169,10 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     };
   }, [currentUser, roomId]);
 
-  // Validar PIN ingresado
   useEffect(() => {
-    if (currentUser?.isHost) {
+    if (currentUser && currentUser.isHost) {
       setIsPinValidated(true);
     } else if (!roomState.pin) {
-      // Sala pública sin PIN
       setIsPinValidated(true);
     } else if (enteredPin === roomState.pin) {
       setIsPinValidated(true);
@@ -188,7 +180,6 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     }
   }, [roomState.pin, enteredPin, currentUser]);
 
-  // Transmitir nuevo estado global
   const broadcastNewState = (newState: RoomState) => {
     setRoomState(newState);
     if (channel) {
@@ -200,9 +191,8 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     }
   };
 
-  // Función para EXPULSAR a un jugador (Solo anfitrión)
   const handleKickPlayer = (targetPlayerId: string) => {
-    if (!currentUser?.isHost) return;
+    if (!currentUser || !currentUser.isHost) return;
 
     const updatedBanned = [...(roomState.bannedPlayerIds || []), targetPlayerId];
     const updatedPlayers = roomState.players.filter((p) => p.id !== targetPlayerId);
@@ -224,7 +214,6 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     }
   };
 
-  // Temporizador durante el juego
   useEffect(() => {
     let timer: any;
     if (roomState.phase === 'playing' && timeLeft > 0) {
@@ -241,9 +230,8 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     return () => clearInterval(timer);
   }, [roomState.phase, timeLeft]);
 
-  // Iniciar ruleta de letras
   const startRoundRoulette = () => {
-    const available = LETTERS.split('').filter((l) => !roomState.usedLetters.includes(l));
+    const available = LETTERS.split('').filter((l) => roomState.usedLetters.indexOf(l) === -1);
     const chosen = available.length > 0 ? available[Math.floor(Math.random() * available.length)] : 'A';
 
     const newState: RoomState = {
@@ -275,9 +263,8 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     }, 100);
   };
 
-  // Cantar ¡Basta!
   const handleCallStop = (name?: string) => {
-    const stopper = name || currentUser?.name || 'Alguien';
+    const stopper = name || (currentUser ? currentUser.name : 'Alguien');
     if (channel) {
       channel.send({
         type: 'broadcast',
@@ -292,7 +279,6 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     }));
   };
 
-  // Agregar categoría
   const addCategory = () => {
     if (!newCatInput.trim()) return;
     const updated = [...roomState.settings.categories, newCatInput.trim()];
@@ -304,7 +290,6 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     setNewCatInput('');
   };
 
-  // Quitar categoría
   const removeCategory = (cat: string) => {
     const updated = roomState.settings.categories.filter((c) => c !== cat);
     const newState = {
@@ -320,7 +305,6 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
-  // Pantalla si el usuario fue EXPULSADO
   if (isBanned) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
@@ -343,8 +327,7 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     );
   }
 
-  // Pantalla de BLOQUEO POR PIN (Sala privada)
-  if (roomState.pin && !isPinValidated && !currentUser?.isHost) {
+  if (roomState.pin && !isPinValidated && (!currentUser || !currentUser.isHost)) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
         <div className="max-w-md w-full bg-slate-900 border border-slate-800 p-8 rounded-3xl text-center space-y-5 shadow-2xl">
@@ -398,7 +381,6 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
 
   return (
     <div className={`min-h-screen ${t.bg} ${t.text} transition-colors duration-200`}>
-      {/* Cabecera / Barra de herramientas */}
       <header className={`border-b ${t.border} py-3 px-4 sm:px-8 flex items-center justify-between`}>
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white font-black text-xl flex items-center justify-center shadow">
@@ -417,7 +399,6 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
           </div>
         </div>
 
-        {/* Selector de Temas */}
         <div className="flex items-center gap-2">
           <div className={`flex rounded-xl p-1 border ${t.border} bg-black/5 dark:bg-white/5`}>
             {(['light', 'paper', 'dark', 'arcade'] as ThemeId[]).map((themeKey) => (
@@ -449,9 +430,7 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
         </div>
       </header>
 
-      {/* Contenido Principal */}
       <main className="max-w-4xl mx-auto p-4 sm:p-6">
-        {/* FASE: LOBBY */}
         {roomState.phase === 'lobby' && (
           <div className="space-y-6">
             <div className={`p-6 rounded-3xl border ${t.border} ${t.card}`}>
@@ -467,7 +446,7 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
                   </h2>
                   <p className={`text-sm ${t.muted}`}>Comparte el enlace y el PIN solo con tus amigos.</p>
                 </div>
-                {currentUser?.isHost && (
+                {currentUser && currentUser.isHost && (
                   <button
                     onClick={startRoundRoulette}
                     className={`py-3 px-6 rounded-2xl font-bold flex items-center justify-center gap-2 ${t.accent} shadow-lg`}
@@ -477,7 +456,6 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
                 )}
               </div>
 
-              {/* JUGADORES CONECTADOS + BOTÓN DE EXPULSAR */}
               <div className="py-6 border-b border-inherit">
                 <h3 className="text-xs font-bold uppercase tracking-wider mb-4 flex items-center gap-2">
                   <Users className="w-4 h-4" /> Jugadores Conectados ({roomState.players.length || 1})
@@ -485,7 +463,7 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                   {(roomState.players.length > 0 ? roomState.players : [currentUser]).map((p) => {
                     if (!p) return null;
-                    const isSelf = p.id === currentUser?.id;
+                    const isSelf = p.id === (currentUser ? currentUser.id : '');
                     return (
                       <div
                         key={p.id}
@@ -505,8 +483,7 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
                           </div>
                         </div>
 
-                        {/* Botón de Expulsar exclusivo para el anfitrión (no puede expulsarse a sí mismo) */}
-                        {currentUser?.isHost && !isSelf && (
+                        {currentUser && currentUser.isHost && !isSelf && (
                           <button
                             onClick={() => handleKickPlayer(p.id)}
                             title={`Expulsar a ${p.name}`}
@@ -521,7 +498,6 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
                 </div>
               </div>
 
-              {/* Categorías a Medida */}
               <div className="pt-6">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-xs font-bold uppercase tracking-wider flex items-center gap-2">
@@ -536,7 +512,7 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
                       className={`px-3 py-1.5 rounded-xl text-sm font-medium border flex items-center gap-2 ${t.tagBg}`}
                     >
                       {cat}
-                      {currentUser?.isHost && (
+                      {currentUser && currentUser.isHost && (
                         <button
                           onClick={() => removeCategory(cat)}
                           className="hover:text-red-500 transition-colors"
@@ -548,7 +524,7 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
                   ))}
                 </div>
 
-                {currentUser?.isHost && (
+                {currentUser && currentUser.isHost && (
                   <div className="flex gap-2 max-w-sm">
                     <input
                       type="text"
@@ -571,7 +547,6 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
           </div>
         )}
 
-        {/* FASE: RULETA */}
         {roomState.phase === 'roulette' && (
           <div className="min-h-[50vh] flex flex-col items-center justify-center text-center space-y-6">
             <h2 className="text-lg font-bold tracking-widest uppercase opacity-75">Sorteando Letra...</h2>
@@ -582,7 +557,6 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
           </div>
         )}
 
-        {/* FASE: JUGANDO */}
         {roomState.phase === 'playing' && (
           <div className="space-y-6">
             <div className="flex items-center justify-between">
@@ -602,7 +576,6 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
               </div>
             </div>
 
-            {/* Inputs por Categoría */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {roomState.settings.categories.map((cat) => {
                 const val = myAnswers[cat] || '';
@@ -635,7 +608,6 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
               })}
             </div>
 
-            {/* BOTÓN ¡BASTA PARA MÍ, BASTA PARA TODOS! */}
             <div className="pt-4 text-center">
               <button
                 onClick={() => handleCallStop()}
@@ -647,7 +619,6 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
           </div>
         )}
 
-        {/* FASE: VOTACIÓN */}
         {roomState.phase === 'voting' && (
           <div className="space-y-6">
             <div className="text-center space-y-1">
@@ -688,7 +659,7 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
               </table>
             </div>
 
-            {currentUser?.isHost && (
+            {currentUser && currentUser.isHost && (
               <div className="text-center pt-4">
                 <button
                   onClick={() => {
@@ -712,13 +683,12 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
           </div>
         )}
 
-        {/* FASE: PODIO FINAL */}
         {roomState.phase === 'podium' && (
           <div className="min-h-[50vh] flex flex-col items-center justify-center text-center space-y-6">
             <Trophy className="w-20 h-20 text-amber-500 animate-bounce" />
             <h2 className="text-3xl font-black">¡Fin de la Partida!</h2>
             <p className={`text-sm ${t.muted}`}>¡Gran juego a todos!</p>
-            {currentUser?.isHost && (
+            {currentUser && currentUser.isHost && (
               <button
                 onClick={() => {
                   broadcastNewState({

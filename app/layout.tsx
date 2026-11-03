@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Tutti Frutti Online Privado",
+  title: "Tutti Frutti Online",
   description: "Juego Tutti Frutti multijugador privado en tiempo real con amigos",
 };
 
