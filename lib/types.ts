@@ -23,12 +23,15 @@ export interface PlayerAnswerRecord {
 
 export interface RoomState {
   roomId: string;
+  pin?: string;
+  hostId: string;
   phase: GamePhase;
   currentRound: number;
   currentLetter: string;
   usedLetters: string[];
   settings: GameSettings;
   players: Player[];
-  results: Record<string, Record<string, PlayerAnswerRecord>>; // round -> playerId -> answers/scores
+  bannedPlayerIds: string[];
+  results: Record<string, Record<string, PlayerAnswerRecord>>;
   stoppedBy: string | null;
 }

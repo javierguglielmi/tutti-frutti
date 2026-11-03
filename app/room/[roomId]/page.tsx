@@ -19,12 +19,11 @@ import {
   Settings2,
   Plus,
   Share2,
-  Copy,
-  Palette,
-  Sun,
-  Moon,
-  Scroll,
-  Gamepad2
+  Lock,
+  UserX,
+  ShieldCheck,
+  KeyRound,
+  AlertTriangle
 } from 'lucide-react';
 
 const LETTERS = 'ABCDEFGHIJLMNOPQRSTUV';
@@ -38,9 +37,17 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
   const [currentUser, setCurrentUser] = useState<Player | null>(null);
   const [channel, setChannel] = useState<any>(null);
 
+  // Estados de control de acceso y expulsión
+  const [isBanned, setIsBanned] = useState(false);
+  const [enteredPin, setEnteredPin] = useState('');
+  const [isPinValidated, setIsPinValidated] = useState(false);
+  const [pinError, setPinError] = useState(false);
+
   // Estado del juego
   const [roomState, setRoomState] = useState<RoomState>({
     roomId,
+    pin: undefined,
+    hostId: '',
     phase: 'lobby',
     currentRound: 1,
     currentLetter: '',
@@ -51,6 +58,7 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
       categories: [...DEFAULT_CATEGORIES],
     },
     players: [],
+    bannedPlayerIds: [],
     results: {},
     stoppedBy: null,
   });
@@ -63,7 +71,7 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
 
   const t = THEMES[currentTheme];
 
-  // 1. Inicializar usuario
+  // 1. Cargar usuario de localStorage
   useEffect(() => {
     const saved = localStorage.getItem('tf_player');
     if (!saved) {
@@ -75,10 +83,21 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
       id: Math.random().toString(36).substring(2, 9),
       name: parsed.name,
       avatar: parsed.avatar,
-      isHost: parsed.isHost ?? false,
+      isHost: Boolean(parsed.isHost),
       score: 0,
     };
     setCurrentUser(player);
+
+    if (parsed.isHost && parsed.createdPin) {
+      setRoomState((prev) => ({
+        ...prev,
+        pin: parsed.createdPin,
+        hostId: player.id,
+      }));
+      setIsPinValidated(true);
+    } else if (parsed.enteredPin) {
+      setEnteredPin(parsed.enteredPin);
+    }
   }, [router]);
 
   // 2. Conectar a Supabase Realtime Channel
@@ -93,7 +112,25 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     });
 
     ch.on('broadcast', { event: 'STATE_SYNC' }, ({ payload }) => {
-      setRoomState(payload.state);
+      const incomingState: RoomState = payload.state;
+      setRoomState(incomingState);
+
+      // Si este usuario fue expulsado
+      if (incomingState.bannedPlayerIds?.includes(currentUser.id)) {
+        setIsBanned(true);
+        ch.unsubscribe();
+      }
+
+      // Si la sala tiene PIN y somos invitados
+      if (!currentUser.isHost && incomingState.pin) {
+        setRoomState((prev) => ({ ...prev, pin: incomingState.pin }));
+      }
+    })
+    .on('broadcast', { event: 'KICK_PLAYER' }, ({ payload }) => {
+      if (payload.kickedPlayerId === currentUser.id) {
+        setIsBanned(true);
+        ch.unsubscribe();
+      }
     })
     .on('broadcast', { event: 'STOP_PLAYING' }, ({ payload }) => {
       setRoomState((prev) => ({
@@ -106,15 +143,23 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
       const presenceState = ch.presenceState();
       const active: Player[] = Object.values(presenceState)
         .flat()
-        .map((p: any) => p.user);
+        .map((p: any) => p.user)
+        .filter((p: Player) => !roomState.bannedPlayerIds?.includes(p.id));
 
       setRoomState((prev) => {
-        // Asegurar que el anfitrión siga definido
-        const updatedPlayers = active.map((pl, idx) => ({
+        const hostExists = active.some((p) => p.id === prev.hostId);
+        const resolvedHostId = hostExists ? prev.hostId : (active[0]?.id || currentUser.id);
+
+        const updatedPlayers = active.map((pl) => ({
           ...pl,
-          isHost: idx === 0 || pl.isHost,
+          isHost: pl.id === resolvedHostId,
         }));
-        return { ...prev, players: updatedPlayers };
+
+        return {
+          ...prev,
+          hostId: resolvedHostId,
+          players: updatedPlayers,
+        };
       });
     })
     .subscribe(async (status) => {
@@ -130,7 +175,20 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     };
   }, [currentUser, roomId]);
 
-  // Sincronizar estado global
+  // Validar PIN ingresado
+  useEffect(() => {
+    if (currentUser?.isHost) {
+      setIsPinValidated(true);
+    } else if (!roomState.pin) {
+      // Sala pública sin PIN
+      setIsPinValidated(true);
+    } else if (enteredPin === roomState.pin) {
+      setIsPinValidated(true);
+      setPinError(false);
+    }
+  }, [roomState.pin, enteredPin, currentUser]);
+
+  // Transmitir nuevo estado global
   const broadcastNewState = (newState: RoomState) => {
     setRoomState(newState);
     if (channel) {
@@ -138,6 +196,30 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
         type: 'broadcast',
         event: 'STATE_SYNC',
         payload: { state: newState },
+      });
+    }
+  };
+
+  // Función para EXPULSAR a un jugador (Solo anfitrión)
+  const handleKickPlayer = (targetPlayerId: string) => {
+    if (!currentUser?.isHost) return;
+
+    const updatedBanned = [...(roomState.bannedPlayerIds || []), targetPlayerId];
+    const updatedPlayers = roomState.players.filter((p) => p.id !== targetPlayerId);
+
+    const newState: RoomState = {
+      ...roomState,
+      players: updatedPlayers,
+      bannedPlayerIds: updatedBanned,
+    };
+
+    broadcastNewState(newState);
+
+    if (channel) {
+      channel.send({
+        type: 'broadcast',
+        event: 'KICK_PLAYER',
+        payload: { kickedPlayerId: targetPlayerId },
       });
     }
   };
@@ -159,7 +241,7 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     return () => clearInterval(timer);
   }, [roomState.phase, timeLeft]);
 
-  // Iniciar sorteo de letra
+  // Iniciar ruleta de letras
   const startRoundRoulette = () => {
     const available = LETTERS.split('').filter((l) => !roomState.usedLetters.includes(l));
     const chosen = available.length > 0 ? available[Math.floor(Math.random() * available.length)] : 'A';
@@ -172,7 +254,6 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     };
     broadcastNewState(newState);
 
-    // Animación de ruleta
     let step = 0;
     const interval = setInterval(() => {
       setRouletteLetter(LETTERS[Math.floor(Math.random() * LETTERS.length)]);
@@ -211,7 +292,7 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     }));
   };
 
-  // Añadir categoría
+  // Agregar categoría
   const addCategory = () => {
     if (!newCatInput.trim()) return;
     const updated = [...roomState.settings.categories, newCatInput.trim()];
@@ -223,7 +304,7 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     setNewCatInput('');
   };
 
-  // Eliminar categoría
+  // Quitar categoría
   const removeCategory = (cat: string) => {
     const updated = roomState.settings.categories.filter((c) => c !== cat);
     const newState = {
@@ -239,6 +320,82 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
+  // Pantalla si el usuario fue EXPULSADO
+  if (isBanned) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-slate-900 border border-red-900/50 p-8 rounded-3xl text-center space-y-4">
+          <div className="w-16 h-16 rounded-full bg-red-950/80 text-red-400 mx-auto flex items-center justify-center">
+            <UserX className="w-8 h-8" />
+          </div>
+          <h2 className="text-2xl font-black text-red-400">Acceso denegado</h2>
+          <p className="text-slate-400 text-sm">
+            Has sido expulsado de esta sala por el anfitrión.
+          </p>
+          <button
+            onClick={() => router.push('/')}
+            className="px-6 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl font-bold text-sm"
+          >
+            Volver al Inicio
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Pantalla de BLOQUEO POR PIN (Sala privada)
+  if (roomState.pin && !isPinValidated && !currentUser?.isHost) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-slate-900 border border-slate-800 p-8 rounded-3xl text-center space-y-5 shadow-2xl">
+          <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 mx-auto flex items-center justify-center">
+            <Lock className="w-8 h-8" />
+          </div>
+          <div className="space-y-1">
+            <h2 className="text-2xl font-black">Sala Privada Protegida</h2>
+            <p className="text-sm text-slate-400">
+              Esta partida requiere un PIN de acceso establecido por el creador.
+            </p>
+          </div>
+
+          <div className="space-y-3">
+            <input
+              type="password"
+              placeholder="Ingresa el PIN de 4 dígitos"
+              maxLength={6}
+              value={enteredPin}
+              onChange={(e) => {
+                setEnteredPin(e.target.value);
+                setPinError(false);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  if (enteredPin === roomState.pin) setIsPinValidated(true);
+                  else setPinError(true);
+                }
+              }}
+              className="w-full text-center text-xl font-mono tracking-widest px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl focus:border-amber-400 focus:outline-none"
+            />
+            {pinError && (
+              <p className="text-xs text-red-400 font-semibold flex items-center justify-center gap-1">
+                <AlertTriangle className="w-3.5 h-3.5" /> PIN incorrecto. Inténtalo de nuevo.
+              </p>
+            )}
+            <button
+              onClick={() => {
+                if (enteredPin === roomState.pin) setIsPinValidated(true);
+                else setPinError(true);
+              }}
+              className="w-full py-3 bg-amber-500 hover:bg-amber-600 font-bold text-slate-950 rounded-xl transition-all"
+            >
+              Desbloquear y Entrar
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`min-h-screen ${t.bg} ${t.text} transition-colors duration-200`}>
       {/* Cabecera / Barra de herramientas */}
@@ -250,12 +407,17 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
           <div>
             <div className="text-sm font-bold flex items-center gap-2">
               Sala: <span className="font-mono bg-slate-200/50 dark:bg-slate-800 px-2 py-0.5 rounded text-xs">{roomId}</span>
+              {roomState.pin && (
+                <span className="flex items-center gap-1 text-[11px] font-bold text-amber-500 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-full">
+                  <Lock className="w-3 h-3" /> Privada
+                </span>
+              )}
             </div>
             <div className={`text-xs ${t.muted}`}>Ronda {roomState.currentRound} de {roomState.settings.totalRounds}</div>
           </div>
         </div>
 
-        {/* Selector de Modos Visuales */}
+        {/* Selector de Temas */}
         <div className="flex items-center gap-2">
           <div className={`flex rounded-xl p-1 border ${t.border} bg-black/5 dark:bg-white/5`}>
             {(['light', 'paper', 'dark', 'arcade'] as ThemeId[]).map((themeKey) => (
@@ -287,7 +449,7 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
         </div>
       </header>
 
-      {/* Contenido Principal según la Fase */}
+      {/* Contenido Principal */}
       <main className="max-w-4xl mx-auto p-4 sm:p-6">
         {/* FASE: LOBBY */}
         {roomState.phase === 'lobby' && (
@@ -295,37 +457,67 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
             <div className={`p-6 rounded-3xl border ${t.border} ${t.card}`}>
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-inherit">
                 <div>
-                  <h2 className="text-2xl font-black">Sala de Espera</h2>
-                  <p className={`text-sm ${t.muted}`}>Comparte el enlace o código para que entren tus amigos.</p>
+                  <h2 className="text-2xl font-black flex items-center gap-2">
+                    Sala de Espera
+                    {roomState.pin && (
+                      <span className="text-xs px-2.5 py-1 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 font-mono">
+                        PIN: {roomState.pin}
+                      </span>
+                    )}
+                  </h2>
+                  <p className={`text-sm ${t.muted}`}>Comparte el enlace y el PIN solo con tus amigos.</p>
                 </div>
                 {currentUser?.isHost && (
                   <button
                     onClick={startRoundRoulette}
                     className={`py-3 px-6 rounded-2xl font-bold flex items-center justify-center gap-2 ${t.accent} shadow-lg`}
                   >
-                    <Play className="w-5 h-5 fill-current" /> Iniciar Juego
+                    <Play className="w-5 h-5 fill-current" /> Iniciar Partida
                   </button>
                 )}
               </div>
 
-              {/* Jugadores Conectados */}
+              {/* JUGADORES CONECTADOS + BOTÓN DE EXPULSAR */}
               <div className="py-6 border-b border-inherit">
                 <h3 className="text-xs font-bold uppercase tracking-wider mb-4 flex items-center gap-2">
                   <Users className="w-4 h-4" /> Jugadores Conectados ({roomState.players.length || 1})
                 </h3>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  {(roomState.players.length > 0 ? roomState.players : [currentUser]).map((p) => (
-                    <div
-                      key={p?.id || 'me'}
-                      className={`p-3 rounded-2xl border ${t.border} flex items-center gap-3 bg-black/5 dark:bg-white/5`}
-                    >
-                      <span className="text-2xl">{p?.avatar || '🦊'}</span>
-                      <div className="truncate">
-                        <div className="font-semibold text-sm truncate">{p?.name || 'Tú'}</div>
-                        {p?.isHost && <span className="text-[10px] text-emerald-500 font-bold uppercase">Anfitrión</span>}
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                  {(roomState.players.length > 0 ? roomState.players : [currentUser]).map((p) => {
+                    if (!p) return null;
+                    const isSelf = p.id === currentUser?.id;
+                    return (
+                      <div
+                        key={p.id}
+                        className={`p-3.5 rounded-2xl border ${t.border} flex items-center justify-between bg-black/5 dark:bg-white/5`}
+                      >
+                        <div className="flex items-center gap-3 truncate">
+                          <span className="text-2xl">{p.avatar || '🦊'}</span>
+                          <div className="truncate">
+                            <div className="font-semibold text-sm truncate flex items-center gap-1.5">
+                              {p.name} {isSelf && <span className="text-xs opacity-60 font-normal">(Tú)</span>}
+                            </div>
+                            {p.isHost && (
+                              <span className="text-[10px] text-emerald-500 font-bold uppercase tracking-wide">
+                                Anfitrión
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Botón de Expulsar exclusivo para el anfitrión (no puede expulsarse a sí mismo) */}
+                        {currentUser?.isHost && !isSelf && (
+                          <button
+                            onClick={() => handleKickPlayer(p.id)}
+                            title={`Expulsar a ${p.name}`}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition-colors"
+                          >
+                            <UserX className="w-4 h-4" />
+                          </button>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 
@@ -410,7 +602,7 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
               </div>
             </div>
 
-            {/* Grilla de Inputs por Categoría */}
+            {/* Inputs por Categoría */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {roomState.settings.categories.map((cat) => {
                 const val = myAnswers[cat] || '';
@@ -455,7 +647,7 @@ export default function RoomPage({ params }: { params: Promise<{ roomId: string 
           </div>
         )}
 
-        {/* FASE: VOTACIÓN / PUNTUACIÓN */}
+        {/* FASE: VOTACIÓN */}
         {roomState.phase === 'voting' && (
           <div className="space-y-6">
             <div className="text-center space-y-1">

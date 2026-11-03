@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Tutti Frutti Online",
-  description: "Juego Tutti Frutti multijugador en tiempo real con amigos",
+  title: "Tutti Frutti Online Privado",
+  description: "Juego Tutti Frutti multijugador privado en tiempo real con amigos",
 };
 
 export default function RootLayout({
