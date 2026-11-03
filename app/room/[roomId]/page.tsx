@@ -1,0 +1,549 @@
+'use client';
+
+import React, { useState, useEffect, useRef, use } from 'react';
+import { useRouter } from 'next/navigation';
+import { supabase } from '@/lib/supabase';
+import { RoomState, Player, ThemeId } from '@/lib/types';
+import { THEMES, DEFAULT_CATEGORIES } from '@/lib/constants';
+import confetti from 'canvas-confetti';
+import {
+  Trophy,
+  Users,
+  Clock,
+  Sparkles,
+  Play,
+  RotateCcw,
+  Check,
+  X,
+  Volume2,
+  Settings2,
+  Plus,
+  Share2,
+  Copy,
+  Palette,
+  Sun,
+  Moon,
+  Scroll,
+  Gamepad2
+} from 'lucide-react';
+
+const LETTERS = 'ABCDEFGHIJLMNOPQRSTUV';
+
+export default function RoomPage({ params }: { params: Promise<{ roomId: string }> }) {
+  const resolvedParams = use(params);
+  const roomId = resolvedParams.roomId;
+  const router = useRouter();
+
+  const [currentTheme, setCurrentTheme] = useState<ThemeId>('light');
+  const [currentUser, setCurrentUser] = useState<Player | null>(null);
+  const [channel, setChannel] = useState<any>(null);
+
+  // Estado del juego
+  const [roomState, setRoomState] = useState<RoomState>({
+    roomId,
+    phase: 'lobby',
+    currentRound: 1,
+    currentLetter: '',
+    usedLetters: [],
+    settings: {
+      roundDuration: 60,
+      totalRounds: 5,
+      categories: [...DEFAULT_CATEGORIES],
+    },
+    players: [],
+    results: {},
+    stoppedBy: null,
+  });
+
+  const [myAnswers, setMyAnswers] = useState<Record<string, string>>({});
+  const [timeLeft, setTimeLeft] = useState(60);
+  const [rouletteLetter, setRouletteLetter] = useState('A');
+  const [newCatInput, setNewCatInput] = useState('');
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  const t = THEMES[currentTheme];
+
+  // 1. Inicializar usuario
+  useEffect(() => {
+    const saved = localStorage.getItem('tf_player');
+    if (!saved) {
+      router.push('/');
+      return;
+    }
+    const parsed = JSON.parse(saved);
+    const player: Player = {
+      id: Math.random().toString(36).substring(2, 9),
+      name: parsed.name,
+      avatar: parsed.avatar,
+      isHost: parsed.isHost ?? false,
+      score: 0,
+    };
+    setCurrentUser(player);
+  }, [router]);
+
+  // 2. Conectar a Supabase Realtime Channel
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const ch = supabase.channel(`room:${roomId}`, {
+      config: {
+        presence: { key: currentUser.id },
+        broadcast: { self: true },
+      },
+    });
+
+    ch.on('broadcast', { event: 'STATE_SYNC' }, ({ payload }) => {
+      setRoomState(payload.state);
+    })
+    .on('broadcast', { event: 'STOP_PLAYING' }, ({ payload }) => {
+      setRoomState((prev) => ({
+        ...prev,
+        phase: 'voting',
+        stoppedBy: payload.stoppedBy,
+      }));
+    })
+    .on('presence', { event: 'sync' }, () => {
+      const presenceState = ch.presenceState();
+      const active: Player[] = Object.values(presenceState)
+        .flat()
+        .map((p: any) => p.user);
+
+      setRoomState((prev) => {
+        // Asegurar que el anfitrión siga definido
+        const updatedPlayers = active.map((pl, idx) => ({
+          ...pl,
+          isHost: idx === 0 || pl.isHost,
+        }));
+        return { ...prev, players: updatedPlayers };
+      });
+    })
+    .subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') {
+        await ch.track({ user: currentUser });
+      }
+    });
+
+    setChannel(ch);
+
+    return () => {
+      ch.unsubscribe();
+    };
+  }, [currentUser, roomId]);
+
+  // Sincronizar estado global
+  const broadcastNewState = (newState: RoomState) => {
+    setRoomState(newState);
+    if (channel) {
+      channel.send({
+        type: 'broadcast',
+        event: 'STATE_SYNC',
+        payload: { state: newState },
+      });
+    }
+  };
+
+  // Temporizador durante el juego
+  useEffect(() => {
+    let timer: any;
+    if (roomState.phase === 'playing' && timeLeft > 0) {
+      timer = setInterval(() => {
+        setTimeLeft((prev) => {
+          if (prev <= 1) {
+            handleCallStop('El tiempo');
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => clearInterval(timer);
+  }, [roomState.phase, timeLeft]);
+
+  // Iniciar sorteo de letra
+  const startRoundRoulette = () => {
+    const available = LETTERS.split('').filter((l) => !roomState.usedLetters.includes(l));
+    const chosen = available.length > 0 ? available[Math.floor(Math.random() * available.length)] : 'A';
+
+    const newState: RoomState = {
+      ...roomState,
+      phase: 'roulette',
+      currentLetter: chosen,
+      stoppedBy: null,
+    };
+    broadcastNewState(newState);
+
+    // Animación de ruleta
+    let step = 0;
+    const interval = setInterval(() => {
+      setRouletteLetter(LETTERS[Math.floor(Math.random() * LETTERS.length)]);
+      step++;
+      if (step > 15) {
+        clearInterval(interval);
+        setRouletteLetter(chosen);
+        setTimeout(() => {
+          const playingState: RoomState = {
+            ...newState,
+            phase: 'playing',
+            usedLetters: [...roomState.usedLetters, chosen],
+          };
+          setTimeLeft(roomState.settings.roundDuration);
+          setMyAnswers({});
+          broadcastNewState(playingState);
+        }, 1200);
+      }
+    }, 100);
+  };
+
+  // Cantar ¡Basta!
+  const handleCallStop = (name?: string) => {
+    const stopper = name || currentUser?.name || 'Alguien';
+    if (channel) {
+      channel.send({
+        type: 'broadcast',
+        event: 'STOP_PLAYING',
+        payload: { stoppedBy: stopper },
+      });
+    }
+    setRoomState((prev) => ({
+      ...prev,
+      phase: 'voting',
+      stoppedBy: stopper,
+    }));
+  };
+
+  // Añadir categoría
+  const addCategory = () => {
+    if (!newCatInput.trim()) return;
+    const updated = [...roomState.settings.categories, newCatInput.trim()];
+    const newState = {
+      ...roomState,
+      settings: { ...roomState.settings, categories: updated },
+    };
+    broadcastNewState(newState);
+    setNewCatInput('');
+  };
+
+  // Eliminar categoría
+  const removeCategory = (cat: string) => {
+    const updated = roomState.settings.categories.filter((c) => c !== cat);
+    const newState = {
+      ...roomState,
+      settings: { ...roomState.settings, categories: updated },
+    };
+    broadcastNewState(newState);
+  };
+
+  const copyShareLink = () => {
+    navigator.clipboard.writeText(window.location.href);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
+
+  return (
+    <div className={`min-h-screen ${t.bg} ${t.text} transition-colors duration-200`}>
+      {/* Cabecera / Barra de herramientas */}
+      <header className={`border-b ${t.border} py-3 px-4 sm:px-8 flex items-center justify-between`}>
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white font-black text-xl flex items-center justify-center shadow">
+            TF
+          </div>
+          <div>
+            <div className="text-sm font-bold flex items-center gap-2">
+              Sala: <span className="font-mono bg-slate-200/50 dark:bg-slate-800 px-2 py-0.5 rounded text-xs">{roomId}</span>
+            </div>
+            <div className={`text-xs ${t.muted}`}>Ronda {roomState.currentRound} de {roomState.settings.totalRounds}</div>
+          </div>
+        </div>
+
+        {/* Selector de Modos Visuales */}
+        <div className="flex items-center gap-2">
+          <div className={`flex rounded-xl p-1 border ${t.border} bg-black/5 dark:bg-white/5`}>
+            {(['light', 'paper', 'dark', 'arcade'] as ThemeId[]).map((themeKey) => (
+              <button
+                key={themeKey}
+                onClick={() => setCurrentTheme(themeKey)}
+                title={THEMES[themeKey].name}
+                className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-all ${
+                  currentTheme === themeKey
+                    ? `${t.accent} shadow-sm`
+                    : `${t.muted} ${t.accentHover}`
+                }`}
+              >
+                {themeKey === 'light' && '☀️ Luz'}
+                {themeKey === 'paper' && '📜 Papel'}
+                {themeKey === 'dark' && '🌙 Noche'}
+                {themeKey === 'arcade' && '👾 Neón'}
+              </button>
+            ))}
+          </div>
+
+          <button
+            onClick={copyShareLink}
+            className={`p-2 rounded-xl border ${t.border} ${t.accentHover} text-xs flex items-center gap-1.5`}
+            title="Copiar enlace de sala"
+          >
+            {copiedLink ? <Check className="w-4 h-4 text-emerald-500" /> : <Share2 className="w-4 h-4" />}
+          </button>
+        </div>
+      </header>
+
+      {/* Contenido Principal según la Fase */}
+      <main className="max-w-4xl mx-auto p-4 sm:p-6">
+        {/* FASE: LOBBY */}
+        {roomState.phase === 'lobby' && (
+          <div className="space-y-6">
+            <div className={`p-6 rounded-3xl border ${t.border} ${t.card}`}>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-inherit">
+                <div>
+                  <h2 className="text-2xl font-black">Sala de Espera</h2>
+                  <p className={`text-sm ${t.muted}`}>Comparte el enlace o código para que entren tus amigos.</p>
+                </div>
+                {currentUser?.isHost && (
+                  <button
+                    onClick={startRoundRoulette}
+                    className={`py-3 px-6 rounded-2xl font-bold flex items-center justify-center gap-2 ${t.accent} shadow-lg`}
+                  >
+                    <Play className="w-5 h-5 fill-current" /> Iniciar Juego
+                  </button>
+                )}
+              </div>
+
+              {/* Jugadores Conectados */}
+              <div className="py-6 border-b border-inherit">
+                <h3 className="text-xs font-bold uppercase tracking-wider mb-4 flex items-center gap-2">
+                  <Users className="w-4 h-4" /> Jugadores Conectados ({roomState.players.length || 1})
+                </h3>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {(roomState.players.length > 0 ? roomState.players : [currentUser]).map((p) => (
+                    <div
+                      key={p?.id || 'me'}
+                      className={`p-3 rounded-2xl border ${t.border} flex items-center gap-3 bg-black/5 dark:bg-white/5`}
+                    >
+                      <span className="text-2xl">{p?.avatar || '🦊'}</span>
+                      <div className="truncate">
+                        <div className="font-semibold text-sm truncate">{p?.name || 'Tú'}</div>
+                        {p?.isHost && <span className="text-[10px] text-emerald-500 font-bold uppercase">Anfitrión</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Categorías a Medida */}
+              <div className="pt-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-xs font-bold uppercase tracking-wider flex items-center gap-2">
+                    <Settings2 className="w-4 h-4" /> Categorías de la Partida ({roomState.settings.categories.length})
+                  </h3>
+                </div>
+
+                <div className="flex flex-wrap gap-2 mb-4">
+                  {roomState.settings.categories.map((cat) => (
+                    <span
+                      key={cat}
+                      className={`px-3 py-1.5 rounded-xl text-sm font-medium border flex items-center gap-2 ${t.tagBg}`}
+                    >
+                      {cat}
+                      {currentUser?.isHost && (
+                        <button
+                          onClick={() => removeCategory(cat)}
+                          className="hover:text-red-500 transition-colors"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </span>
+                  ))}
+                </div>
+
+                {currentUser?.isHost && (
+                  <div className="flex gap-2 max-w-sm">
+                    <input
+                      type="text"
+                      placeholder="Nueva categoría..."
+                      value={newCatInput}
+                      onChange={(e) => setNewCatInput(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && addCategory()}
+                      className={`flex-1 px-3 py-2 rounded-xl border text-sm focus:outline-none ${t.inputBg}`}
+                    />
+                    <button
+                      onClick={addCategory}
+                      className={`px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-1 ${t.accent}`}
+                    >
+                      <Plus className="w-4 h-4" /> Añadir
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* FASE: RULETA */}
+        {roomState.phase === 'roulette' && (
+          <div className="min-h-[50vh] flex flex-col items-center justify-center text-center space-y-6">
+            <h2 className="text-lg font-bold tracking-widest uppercase opacity-75">Sorteando Letra...</h2>
+            <div className="w-32 h-32 rounded-3xl bg-indigo-600 text-white font-black text-7xl flex items-center justify-center shadow-2xl animate-bounce">
+              {rouletteLetter}
+            </div>
+            <p className={`text-sm ${t.muted}`}>¡Preparen sus lápices y teclados!</p>
+          </div>
+        )}
+
+        {/* FASE: JUGANDO */}
+        {roomState.phase === 'playing' && (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-14 h-14 rounded-2xl bg-indigo-600 text-white font-black text-3xl flex items-center justify-center shadow-lg">
+                  {roomState.currentLetter}
+                </div>
+                <div>
+                  <div className="text-xs uppercase font-bold tracking-wider opacity-75">Letra de la ronda</div>
+                  <div className="text-xl font-black">Escribe con la "{roomState.currentLetter}"</div>
+                </div>
+              </div>
+
+              <div className={`flex items-center gap-2 px-4 py-2 rounded-2xl border ${t.border} font-mono font-bold text-lg`}>
+                <Clock className="w-5 h-5 text-amber-500" />
+                {timeLeft}s
+              </div>
+            </div>
+
+            {/* Grilla de Inputs por Categoría */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {roomState.settings.categories.map((cat) => {
+                const val = myAnswers[cat] || '';
+                const startsOk = val.trim().length > 0 && val.trim()[0].toUpperCase() === roomState.currentLetter;
+                return (
+                  <div key={cat} className={`p-4 rounded-2xl border ${t.border} ${t.card}`}>
+                    <label className="block text-xs font-bold uppercase tracking-wider mb-2 opacity-80">
+                      {cat}
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        placeholder={`Palabra con ${roomState.currentLetter}...`}
+                        value={val}
+                        onChange={(e) => setMyAnswers({ ...myAnswers, [cat]: e.target.value })}
+                        className={`w-full px-3 py-2.5 rounded-xl border text-base focus:outline-none ${t.inputBg}`}
+                      />
+                      {val.trim().length > 0 && (
+                        <div className="absolute right-3 top-3 text-xs font-bold">
+                          {startsOk ? (
+                            <span className="text-emerald-500">✓</span>
+                          ) : (
+                            <span className="text-red-500">No empieza con {roomState.currentLetter}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* BOTÓN ¡BASTA PARA MÍ, BASTA PARA TODOS! */}
+            <div className="pt-4 text-center">
+              <button
+                onClick={() => handleCallStop()}
+                className="w-full sm:w-auto px-10 py-5 rounded-2xl font-black text-lg bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white shadow-xl shadow-red-500/25 uppercase tracking-wide transform hover:scale-[1.02] active:scale-95 transition-all"
+              >
+                🛑 ¡Basta para mí, basta para todos!
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* FASE: VOTACIÓN / PUNTUACIÓN */}
+        {roomState.phase === 'voting' && (
+          <div className="space-y-6">
+            <div className="text-center space-y-1">
+              <div className="inline-block px-3 py-1 rounded-full bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-400 text-xs font-bold uppercase">
+                🛑 ¡Ronda detenida por {roomState.stoppedBy || 'alguien'}!
+              </div>
+              <h2 className="text-2xl font-black">Mesa de Corrección</h2>
+              <p className={`text-sm ${t.muted}`}>Revisen sus respuestas: 10 pts si es única, 5 si se repite, 0 si no vale.</p>
+            </div>
+
+            <div className={`p-4 rounded-3xl border ${t.border} ${t.card} overflow-x-auto`}>
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className={`border-b ${t.border}`}>
+                    <th className="py-3 px-3 font-bold uppercase text-xs">Categoría</th>
+                    <th className="py-3 px-3 font-bold uppercase text-xs">Tu Respuesta</th>
+                    <th className="py-3 px-3 font-bold uppercase text-xs text-center">Puntaje</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-inherit">
+                  {roomState.settings.categories.map((cat) => {
+                    const ans = myAnswers[cat] || '-';
+                    return (
+                      <tr key={cat}>
+                        <td className="py-3 px-3 font-semibold">{cat}</td>
+                        <td className="py-3 px-3 font-mono font-bold text-indigo-600 dark:text-indigo-400">{ans}</td>
+                        <td className="py-3 px-3 text-center">
+                          <div className="inline-flex gap-1">
+                            <span className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-600 font-bold text-xs">
+                              10 pts
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {currentUser?.isHost && (
+              <div className="text-center pt-4">
+                <button
+                  onClick={() => {
+                    if (roomState.currentRound >= roomState.settings.totalRounds) {
+                      broadcastNewState({ ...roomState, phase: 'podium' });
+                      confetti();
+                    } else {
+                      broadcastNewState({
+                        ...roomState,
+                        currentRound: roomState.currentRound + 1,
+                        phase: 'lobby',
+                      });
+                    }
+                  }}
+                  className={`py-3.5 px-8 rounded-2xl font-bold ${t.accent} shadow-lg`}
+                >
+                  {roomState.currentRound >= roomState.settings.totalRounds ? 'Ver Podio Final' : 'Siguiente Ronda'}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* FASE: PODIO FINAL */}
+        {roomState.phase === 'podium' && (
+          <div className="min-h-[50vh] flex flex-col items-center justify-center text-center space-y-6">
+            <Trophy className="w-20 h-20 text-amber-500 animate-bounce" />
+            <h2 className="text-3xl font-black">¡Fin de la Partida!</h2>
+            <p className={`text-sm ${t.muted}`}>¡Gran juego a todos!</p>
+            {currentUser?.isHost && (
+              <button
+                onClick={() => {
+                  broadcastNewState({
+                    ...roomState,
+                    phase: 'lobby',
+                    currentRound: 1,
+                    usedLetters: [],
+                  });
+                }}
+                className={`py-3 px-6 rounded-2xl font-bold ${t.accent}`}
+              >
+                Volver a Jugar
+              </button>
+            )}
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
